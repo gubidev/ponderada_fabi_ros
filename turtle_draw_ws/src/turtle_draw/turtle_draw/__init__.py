@@ -1,0 +1,1 @@
+# turtle_draw — pure-NumPy computer-vision pipeline + ROS 2 turtlesim controller
