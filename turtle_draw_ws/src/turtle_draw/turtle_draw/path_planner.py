@@ -13,20 +13,27 @@ Mapping
   tx = TMIN + (col / img_w) * TRANGE        # col → x  (same direction)
   ty = TMAX - (row / img_h) * TRANGE        # row → y  (flip: ↓ becomes ↑)
 
-Path ordering
--------------
-Raw edge pixels are scattered across the image in raster order.  Connecting
-them naively would cause the turtle to zig-zag randomly, lifting the pen
-thousands of times and producing an incoherent drawing.
+Scan-line path ordering
+-----------------------
+The edge map is traversed row by row (top to bottom), left to right within
+each row — exactly like a printer rastering a page.
 
-A Greedy Nearest-Neighbour (NN) tour minimises total travel distance with
-O(N²) time complexity — acceptable for N ≤ 1 000 points with NumPy's
-vectorised operations (no Python loops over individual distances).
+For each row we identify "runs": groups of consecutive edge-pixel columns.
+Each run becomes two waypoints:
 
-At each step we compute the squared Euclidean distance from the current
-point to ALL remaining candidates using a vectorised subtraction, then pick
-the minimum.  Using squared distance avoids the sqrt and is monotonically
-equivalent for comparison purposes.
+  1. pen_down = False  →  start of the run
+     The controller teleports the turtle here instantly (no trail left).
+
+  2. pen_down = True   →  end of the run
+     The controller drives the turtle forward with the pen down, drawing
+     the horizontal stroke.
+
+Gaps between runs (non-edge pixels) and the vertical jumps between rows are
+handled by the pen-up teleport, so no phantom lines appear on the canvas.
+
+The row_step parameter lets the caller skip rows to trade detail for speed:
+  row_step=1  → every row (maximum detail)
+  row_step=2  → every other row (half the waypoints, twice as fast)
 """
 
 import numpy as np
@@ -38,86 +45,20 @@ TURTLESIM_RANGE = TURTLESIM_MAX - TURTLESIM_MIN   # 10.0 units
 
 class PathPlanner:
 
-    def __init__(self, edge_map: np.ndarray,
-                 max_points: int = 500,
-                 jump_threshold: float = 0.8):
+    def __init__(self, edge_map: np.ndarray, row_step: int = 1):
         """
         Parameters
         ----------
-        edge_map        : binary uint8 array — 255 where an edge pixel exists.
-        max_points      : cap on waypoints to keep drawing time under ~2 min.
-        jump_threshold  : turtlesim-space distance above which the pen is
-                          lifted to avoid drawing phantom connecting lines.
+        edge_map  : binary uint8 array — 255 where an edge pixel exists.
+        row_step  : process every N-th row (1 = all rows, 2 = every other, …).
+                    Increasing this value reduces total waypoints and
+                    drawing time at the cost of vertical resolution.
         """
-        self.edge_map        = edge_map
-        self.max_points      = max_points
-        self.jump_threshold  = jump_threshold
+        self.edge_map = edge_map
+        self.row_step = max(1, int(row_step))
         self.img_h, self.img_w = edge_map.shape
 
     # ------------------------------------------------------------------ #
-
-    def extract_points(self) -> np.ndarray:
-        """
-        Return all edge pixels as an (N, 2) integer array of [row, col] pairs.
-        np.argwhere scans in raster order (top-left to bottom-right).
-        """
-        return np.argwhere(self.edge_map > 0)
-
-    def subsample(self, points: np.ndarray) -> np.ndarray:
-        """
-        Reduce the point cloud to at most max_points using uniform stride.
-
-        Stride-based selection rather than random sampling preserves the
-        spatial distribution of the original edge map: consecutive indices
-        from np.argwhere are nearby in raster order, so taking every k-th
-        point retains roughly one representative per small neighbourhood.
-        """
-        if len(points) <= self.max_points:
-            return points
-        step = max(1, len(points) // self.max_points)
-        return points[::step][: self.max_points]
-
-    def nearest_neighbor_sort(self, points: np.ndarray) -> np.ndarray:
-        """
-        Greedy nearest-neighbour reordering of the waypoint set.
-
-        Algorithm
-        ---------
-        1. Start at index 0.
-        2. For each remaining step, compute squared L2 distance from the
-           current point to every unvisited point (vectorised NumPy subtract
-           + element-wise multiply + sum along axis 1).
-        3. Select the minimum → mark visited → advance.
-
-        Complexity: O(N²) NumPy operations — for N = 500 this is ~250 k
-        element-level ops, completing in milliseconds.
-
-        Using squared distance (no sqrt) is valid because sqrt is monotone:
-        argmin(d²) == argmin(d).
-        """
-        n = len(points)
-        if n == 0:
-            return points
-
-        pts = points.astype(np.float64)
-
-        visited  = np.zeros(n, dtype=bool)
-        order    = np.empty(n, dtype=np.int64)
-        current  = 0
-        visited[0] = True
-        order[0]   = 0
-
-        for step in range(1, n):
-            p     = pts[current]
-            diffs = pts - p                            # (N, 2)
-            dists = (diffs * diffs).sum(axis=1)        # squared L2, shape (N,)
-            dists[visited] = np.inf                    # exclude visited
-            nxt   = int(np.argmin(dists))
-            order[step]  = nxt
-            visited[nxt] = True
-            current      = nxt
-
-        return points[order]
 
     def image_to_turtlesim(self, row: float, col: float):
         """
@@ -133,31 +74,78 @@ class PathPlanner:
 
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _group_runs(cols: np.ndarray):
+        """
+        Partition a sorted array of column indices into contiguous runs.
+
+        A new run begins whenever the gap between consecutive columns > 1.
+        Returns a list of (start_col, end_col) pairs (both inclusive).
+
+        Example
+        -------
+          cols = [2, 3, 4, 7, 8, 12]  →  [(2, 4), (7, 8), (12, 12)]
+
+        A single-pixel run has start_col == end_col; the draw waypoint
+        coincides with the teleport destination and the controller advances
+        immediately (dist = 0 < goal_tol).
+        """
+        runs = []
+        start = int(cols[0])
+        prev  = int(cols[0])
+        for c in cols[1:]:
+            c = int(c)
+            if c - prev > 1:          # gap detected → close current run
+                runs.append((start, prev))
+                start = c
+            prev = c
+        runs.append((start, prev))    # close the last run
+        return runs
+
+    # ------------------------------------------------------------------ #
+
     def plan(self):
         """
-        Run the full planning pipeline.
+        Build a scan-line waypoint list for the full edge map.
+
+        Traverses every row_step-th row top to bottom.  Within each row,
+        contiguous runs of edge pixels become horizontal draw strokes.
+        Each stroke yields one pen-up waypoint (run start, teleport) and
+        one pen-down waypoint (run end, drawn by the proportional
+        controller).
 
         Returns
         -------
-        waypoints : list[tuple[float, float]]   (x, y) turtlesim coordinates
-        pen_down  : list[bool]                  True  → draw; False → jump
+        waypoints : list[tuple[float, float]]
+            (x, y) positions in turtlesim coordinate space.
+        pen_down  : list[bool]
+            Parallel list of pen states.
+            False → pen up   (controller teleports to this point)
+            True  → pen down (controller drives forward, drawing)
         """
-        raw    = self.extract_points()
-        if len(raw) == 0:
+        waypoints = []
+        pen_down  = []
+
+        for row in range(0, self.img_h, self.row_step):
+            # Columns where an edge pixel exists in this row
+            edge_cols = np.where(self.edge_map[row] > 0)[0]
+            if len(edge_cols) == 0:
+                continue
+
+            for run_start, run_end in self._group_runs(edge_cols):
+                # --- pen up: teleport to start of run ---
+                x, y = self.image_to_turtlesim(row, run_start)
+                waypoints.append((x, y))
+                pen_down.append(False)
+
+                # --- pen down: drive to end of run (draws the stroke) ---
+                x, y = self.image_to_turtlesim(row, run_end)
+                waypoints.append((x, y))
+                pen_down.append(True)
+
+        if not waypoints:
             raise RuntimeError(
                 "No edge pixels found — verify the CV pipeline parameters."
             )
-
-        sampled  = self.subsample(raw)
-        ordered  = self.nearest_neighbor_sort(sampled)
-        waypoints = [self.image_to_turtlesim(r, c) for r, c in ordered]
-
-        # Mark pen-up segments: large spatial jumps between consecutive points
-        pen_down = [False] * len(waypoints)   # first move always pen-up
-        for i in range(1, len(waypoints)):
-            dx = waypoints[i][0] - waypoints[i - 1][0]
-            dy = waypoints[i][1] - waypoints[i - 1][1]
-            dist = (dx * dx + dy * dy) ** 0.5
-            pen_down[i] = dist <= self.jump_threshold
 
         return waypoints, pen_down

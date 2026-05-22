@@ -1,0 +1,3 @@
+0000000000000000000000000000000000000000 43907a002aecfe4741f55697fd78929eb3c3af2f Live session user <ubuntu@ubuntu.(none)> 1779206784 +0000	clone: from https://github.com/gubidev/pomnderada-ROS.git
+43907a002aecfe4741f55697fd78929eb3c3af2f 059a6bec4d878bc6f11bef74bd0cca4a808bada9 Felipe Caiafa <felipecaiafa0704@gmail.com> 1779208422 +0000	commit: Add turtle_draw ROS 2 package with pure-NumPy CV pipeline
+059a6bec4d878bc6f11bef74bd0cca4a808bada9 467b01444c0f5a1127ea0f61dc72552c46edf8aa Felipe Caiafa <felipecaiafa0704@gmail.com> 1779212561 +0000	commit: aaaaa
