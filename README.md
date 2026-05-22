@@ -14,9 +14,9 @@ turtle_draw_ws/
 │       ├── package.xml
 │       ├── setup.py
 │       ├── setup.cfg
-│       ├── resource/turtle_draw       ← marcador ament
+│       ├── resource/turtle_draw       
 │       ├── images/
-│       │   └── dog.jpg                ← coloque a imagem aqui antes de buildar
+│       │   └── dog.jpg                ← coloque a imagem aqui para ser processada (exemplo aqui seria o cachorro
 │       └── turtle_draw/
 │           ├── __init__.py
 │           ├── cv_pipeline.py         ← Etapas 1 e 2: pré-processamento + bordas
