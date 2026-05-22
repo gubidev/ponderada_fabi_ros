@@ -1,6 +1,0 @@
-turtle_draw_ws/build/
-turtle_draw_ws/install/
-turtle_draw_ws/log/
-turtle_draw_ws/src/turtle_draw/turtle_draw/__pycache__/
-*.pyc
-*.pyo
